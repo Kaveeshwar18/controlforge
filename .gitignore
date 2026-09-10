@@ -1,0 +1,20 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+backend/.dev-secret
+
+# Generated data (regenerate with: python data-gen/generate_data.py)
+backend/*.sqlite3
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Notebook checkpoints
+.ipynb_checkpoints/

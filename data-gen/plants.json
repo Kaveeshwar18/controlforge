@@ -1,0 +1,99 @@
+{
+  "_comment": "Single source of truth for the plant network. The generator and the map both derive from this file -- adding a site means adding an entry here, no code change. Coordinates are the real city centres; everything else (assets, controls, findings) is synthetic.",
+
+  "corporate": {
+    "id": "corp",
+    "name": "Bharat Manufacturing Group",
+    "org_type": "corporate"
+  },
+
+  "plants": [
+    {
+      "id": "chennai",
+      "name": "Chennai Assembly Plant",
+      "city": "Chennai",
+      "state": "Tamil Nadu",
+      "lat": 13.0827,
+      "lon": 80.2707,
+      "assets": { "ot": 12, "it": 9, "dmz": 4 },
+      "maturity": 0.35
+    },
+    {
+      "id": "coimbatore",
+      "name": "Coimbatore Precision Works",
+      "city": "Coimbatore",
+      "state": "Tamil Nadu",
+      "lat": 11.0168,
+      "lon": 76.9558,
+      "assets": { "ot": 9, "it": 6, "dmz": 3 },
+      "maturity": 0.72
+    },
+    {
+      "id": "bengaluru",
+      "name": "Bengaluru Electronics Plant",
+      "city": "Bengaluru",
+      "state": "Karnataka",
+      "lat": 12.9716,
+      "lon": 77.5946,
+      "assets": { "ot": 8, "it": 11, "dmz": 4 },
+      "maturity": 0.82
+    },
+    {
+      "id": "hyderabad",
+      "name": "Hyderabad Process Plant",
+      "city": "Hyderabad",
+      "state": "Telangana",
+      "lat": 17.385,
+      "lon": 78.4867,
+      "assets": { "ot": 11, "it": 7, "dmz": 3 },
+      "maturity": 0.55
+    },
+    {
+      "id": "pune",
+      "name": "Pune Fabrication Plant",
+      "city": "Pune",
+      "state": "Maharashtra",
+      "lat": 18.5204,
+      "lon": 73.8567,
+      "assets": { "ot": 13, "it": 8, "dmz": 4 },
+      "maturity": 0.25
+    },
+    {
+      "id": "mumbai",
+      "name": "Mumbai Packaging Plant",
+      "city": "Mumbai",
+      "state": "Maharashtra",
+      "lat": 19.076,
+      "lon": 72.8777,
+      "assets": { "ot": 10, "it": 10, "dmz": 5 },
+      "maturity": 0.62
+    }
+  ],
+
+  "users": [
+    { "id": "sarah.chen", "name": "Sarah Chen", "role": "CISO", "title": "CISO, Chennai Assembly", "orgs": [{ "org": "chennai" }] },
+    { "id": "miguel.alvarez", "name": "Miguel Alvarez", "role": "PLANT_MANAGER", "title": "Plant Manager, Chennai Assembly", "orgs": [{ "org": "chennai" }] },
+    { "id": "priya.nair", "name": "Priya Nair", "role": "OT_ENGINEER", "title": "OT Security Engineer, Chennai Assembly", "orgs": [{ "org": "chennai" }] },
+    { "id": "tom.becker", "name": "Tom Becker", "role": "CISO", "title": "CISO, Mumbai Packaging", "orgs": [{ "org": "mumbai" }] },
+    { "id": "lena.ortiz", "name": "Lena Ortiz", "role": "PLANT_MANAGER", "title": "Plant Manager, Pune Fabrication", "orgs": [{ "org": "pune" }] },
+    { "id": "dev.patel", "name": "Dev Patel", "role": "OT_ENGINEER", "title": "OT Security Engineer, Bengaluru Electronics", "orgs": [{ "org": "bengaluru" }] },
+    { "id": "ravi.krishnan", "name": "Ravi Krishnan", "role": "OT_ENGINEER", "title": "OT Security Engineer, Pune Fabrication", "orgs": [{ "org": "pune" }] },
+    {
+      "id": "james.cole", "name": "James Cole", "role": "EXTERNAL_AUDITOR",
+      "title": "Lead Auditor, Meridian Assurance Partners",
+      "orgs": [
+        { "org": "chennai", "redacted": true },
+        { "org": "pune", "redacted": true },
+        { "org": "mumbai", "redacted": true }
+      ]
+    },
+    {
+      "id": "amara.diallo", "name": "Amara Diallo", "role": "CORP_ADMIN",
+      "title": "VP Security, Bharat Manufacturing Group",
+      "orgs": [
+        { "org": "corp" }, { "org": "chennai" }, { "org": "coimbatore" }, { "org": "bengaluru" },
+        { "org": "hyderabad" }, { "org": "pune" }, { "org": "mumbai" }
+      ]
+    }
+  ]
+}
