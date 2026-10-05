@@ -118,14 +118,31 @@ class DataQualityIssue(Base):
     __tablename__ = "data_quality_issues"
     id = Column(String, primary_key=True)
     org_id = Column(String, ForeignKey("organizations.id"), nullable=False)
-    issue_type = Column(String, nullable=False)  # conflict | missing_feed | stale_evidence | regression
+    issue_type = Column(String, nullable=False)  # conflict | missing_feed | stale_evidence | regression | feed_outage
     asset_id = Column(String, ForeignKey("assets.id"), nullable=True)
     control_id = Column(String, ForeignKey("controls.id"), nullable=True)
+    feed_id = Column(String, ForeignKey("data_feeds.id"), nullable=True)
     description = Column(Text, nullable=False)
     status = Column(String, default="open")  # open | resolved
     created_date = Column(Date, nullable=False)
     resolved_date = Column(Date, nullable=True)
     resolved_by = Column(String, nullable=True)
+
+
+class DataFeed(Base):
+    """One upstream source system feeding a plant's risk score (scanner, CMDB,
+    EDR telemetry, ticketing). The scoring engine only ever sees what these
+    feeds delivered, so a feed that stopped syncing silently freezes part of
+    the picture -- tracking last_sync per feed is what lets the dashboard say
+    so instead of presenting yesterday's data as today's."""
+    __tablename__ = "data_feeds"
+    id = Column(String, primary_key=True)
+    org_id = Column(String, ForeignKey("organizations.id"), nullable=False)
+    feed_type = Column(String, nullable=False)  # vuln_scanner | cmdb | edr_telemetry | ticketing
+    name = Column(String, nullable=False)
+    expected_interval_hours = Column(Integer, nullable=False)
+    last_sync = Column(DateTime, nullable=True)  # None => never connected
+    last_error = Column(Text, nullable=True)
 
 
 class RiskSnapshot(Base):

@@ -18,6 +18,7 @@ def list_data_quality_issues(org_id: str, identity: Identity = Depends(get_ident
     return [
         {
             "id": i.id, "issue_type": i.issue_type, "asset_id": i.asset_id, "control_id": i.control_id,
+            "feed_id": i.feed_id,
             "description": i.description, "status": i.status,
             "created_date": str(i.created_date),
             "resolved_date": str(i.resolved_date) if i.resolved_date else None,
@@ -71,6 +72,14 @@ def resolve_data_quality_issue(
     elif issue.issue_type == "stale_evidence" and issue.control_id:
         # engineer re-ran verification now, refreshing the evidence trail
         db.add(models.Evidence(control_id=issue.control_id, timestamp=datetime.utcnow(), source="automated_scan", result="pass"))
+
+    elif issue.issue_type == "feed_outage" and issue.feed_id:
+        # engineer restored the integration and forced a sync -- the feed is
+        # current again, so the worst-case widening it caused drops away
+        feed = db.query(models.DataFeed).filter(models.DataFeed.id == issue.feed_id).first()
+        if feed:
+            feed.last_sync = datetime.now()
+            feed.last_error = None
 
     # "regression" issues are a factual record of what happened -- resolving
     # one means the review is complete, not that the incident is erased, so

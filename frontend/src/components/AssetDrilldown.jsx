@@ -1,7 +1,7 @@
 import Modal from "./Modal";
 import { FreshnessBadge, StatusBadge, FlagBadge, sourceLabel } from "./StatusBadge";
 
-export default function AssetDrilldown({ asset, loading, error, onClose }) {
+export default function AssetDrilldown({ asset, loading, error, onClose, role }) {
   if (loading) {
     return (
       <Modal title="Loading…" onClose={onClose}>
@@ -52,6 +52,15 @@ export default function AssetDrilldown({ asset, loading, error, onClose }) {
               <div className="metric-value">{asset.open_exposure_count}</div>
             </div>
           </div>
+          {asset.controls_summary.unverified_or_missing > 0 && (
+            <p className="explainer">
+              <b>“Not yet verified”</b> means a control is in place or under way, but nothing independent (an automated
+              scan or an audit) has confirmed it recently. Those controls earn little or no credit in the risk score.
+              {role === "PLANT_MANAGER"
+                ? " Some of this is normal for work still in progress. If a control has been marked complete for weeks and is still unverified, raise it with your CISO."
+                : " This is the gap between work reported as done and work shown to be done."}
+            </p>
+          )}
           <p className="footnote">Technical details (specific vulnerabilities, verification logs) aren't shown at this level — this is the business summary.</p>
         </>
       ) : (

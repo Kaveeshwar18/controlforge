@@ -14,6 +14,8 @@ import DataQualityPanel from "./components/DataQualityPanel";
 import AssetDrilldown from "./components/AssetDrilldown";
 import ControlDrilldown from "./components/ControlDrilldown";
 import ComparePanel from "./components/ComparePanel";
+import FeedHealthPanel, { DegradedBanner } from "./components/FeedHealth";
+import RoleScopeCard from "./components/RoleScopeCard";
 import "./App.css";
 
 // No login screen -- the app signs itself in as a seeded demo persona and
@@ -41,6 +43,9 @@ export default function App() {
 
   const [me, setMe] = useState(null);
   const [orgs, setOrgs] = useState([]);
+  // distinguishes "orgs haven't loaded yet" from "this account has none" --
+  // without it the no-plants error flashed on every first load
+  const [orgsLoaded, setOrgsLoaded] = useState(false);
   const [currentOrgId, setCurrentOrgId] = useState(null);
 
   const [dashboard, setDashboard] = useState({ summary: null, trend: null, zones: null, controls: null, assets: null, dq: null, orgs: null });
@@ -68,6 +73,7 @@ export default function App() {
   const resetSessionState = () => {
     setMe(null);
     setOrgs([]);
+    setOrgsLoaded(false);
     setCurrentOrgId(null);
     setShowCompare(false);
     setSearchQuery("");
@@ -134,6 +140,7 @@ export default function App() {
         }
         setMe(caps);
         setOrgs(orgList);
+        setOrgsLoaded(true);
         setCurrentOrgId(orgList.length > 0 ? orgList[0].id : null);
       })
       .catch((e) => {
@@ -285,7 +292,9 @@ export default function App() {
         />
 
         <main className="app-main">
-          {orgs.length === 0 && (
+          {!orgsLoaded && !dashboardError && <div className="empty-state">Loading your plants…</div>}
+
+          {orgsLoaded && orgs.length === 0 && (
             <div className="error-state">
               This account has no plants assigned yet. Access must be granted explicitly — there is no default
               organization.
@@ -303,6 +312,11 @@ export default function App() {
                 <div className="workspace">
                   <div className="col-main">
                     <div id="section-overview">
+                      <DegradedBanner
+                        feeds={dashboard.summary.feed_health}
+                        canFix={!!me?.capabilities?.can_resolve_issues}
+                        onReview={() => scrollToSection("section-dataquality")}
+                      />
                       <SummaryBanner summary={dashboard.summary} orgName={currentOrgName} />
                     </div>
 
@@ -316,6 +330,13 @@ export default function App() {
                         </div>
                       )}
                       <RiskSummaryCards summary={dashboard.summary} role={me?.role} />
+                      {!me?.capabilities?.technical_drilldown && (
+                        <RoleScopeCard
+                          role={me?.role}
+                          orgCount={orgs.filter((o) => o.org_type === "plant").length}
+                          redacted={!!orgs.find((o) => o.id === currentOrgId)?.redacted}
+                        />
+                      )}
                     </div>
 
                     <div id="section-map">
@@ -338,6 +359,16 @@ export default function App() {
                   <aside className="col-side">
                     <div id="section-trend"><RiskTrendChart trend={dashboard.trend} /></div>
                     <div id="section-zones"><ZoneHeatmap zones={dashboard.zones} /></div>
+                    <div id="section-feeds">
+                      <FeedHealthPanel feeds={dashboard.summary.feed_health} computedAt={dashboard.summary.computed_at} />
+                    </div>
+                    {me?.capabilities?.technical_drilldown && (
+                      <RoleScopeCard
+                        role={me?.role}
+                        orgCount={orgs.filter((o) => o.org_type === "plant").length}
+                        redacted={!!orgs.find((o) => o.id === currentOrgId)?.redacted}
+                      />
+                    )}
                   </aside>
                 </div>
               )}
@@ -349,6 +380,7 @@ export default function App() {
       {selectedAssetId && (
         <AssetDrilldown
           asset={assetDetail}
+          role={me?.role}
           loading={assetLoading}
           error={assetError}
           onClose={() => { setSelectedAssetId(null); setAssetDetail(null); }}

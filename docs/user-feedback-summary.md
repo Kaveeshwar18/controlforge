@@ -87,3 +87,19 @@ write a finding, not enough to see internal monitoring config.
 | 4 | Stale-response race condition on rapid role/org switching | **Fixed this build** |
 | 5 | Explain the interaction-effect residual in-context | Open — next iteration |
 | 6 | Auditor evidence-package disclosure level | Validated as-is |
+
+
+---
+
+## Phase 2 status of the Round 1 action items (updated for the 75% review)
+
+| # | Item | Phase 2 status | Where |
+|---|---|---|---|
+| 2 | Plain-language explainer for "unverified controls" on the Plant Manager view | **Implemented.** Role-specific explainer shown whenever an asset has unverified controls | `AssetDrilldown.jsx` |
+| 5 | Explain the interaction-effect residual in context | **Implemented, then corrected.** The v2 experiment showed the residual was vulnerability churn, not control overlap (failure-mode-analysis §D). The residual is now ≈0 by construction, and the leaderboard footnote explains the counterfactual basis instead | `ControlLeaderboard.jsx`, notebook §8 |
+| — | Make the role-based workflow change visible, not implicit | **Implemented.** "What this view includes" card per role: visible / withheld-by-server / permitted actions | `RoleScopeCard.jsx` |
+
+**Round 2 not yet conducted.** A fresh walkthrough with real plant-manager
+and engineer participants against the current build is scheduled for the
+final phase. No Round 2 findings are reported here, so that none are
+fabricated.

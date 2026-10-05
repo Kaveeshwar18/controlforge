@@ -7,6 +7,7 @@ const TYPE_LABEL = {
   missing_feed: "Unverified",
   stale_evidence: "Out of date",
   regression: "Regression",
+  feed_outage: "Feed down",
 };
 
 const TYPE_TONE = {
@@ -14,6 +15,7 @@ const TYPE_TONE = {
   missing_feed: "bad",
   stale_evidence: "warn",
   regression: "bad",
+  feed_outage: "bad",
 };
 
 export default function DataQualityPanel({ issues, canResolve, onResolve }) {

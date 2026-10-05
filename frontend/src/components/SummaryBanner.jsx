@@ -2,7 +2,7 @@ import Gauge from "./Gauge";
 
 function formatDate(iso) {
   const d = new Date(iso + "T00:00:00");
-  return d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+  return d.toLocaleDateString("en-IN", { day: "numeric", month: "long" });
 }
 
 // The hero card: the whole dashboard's finding in one plain-English sentence,
@@ -31,10 +31,11 @@ export default function SummaryBanner({ summary, orgName }) {
           <span className={improved ? "hero-em-good" : "hero-em-bad"}>
             {Math.abs(reduction_pct)}% {improved ? "lower" : "higher"}
           </span>{" "}
-          than in {formatDate(baseline_date).replace(/,.*/, "")}
+          than on {formatDate(baseline_date)}
         </h2>
         <p className="hero-sub">
-          Based on the security work completed since then.
+          Based on the security work completed since then. Completed controls alone are keeping today's risk{" "}
+          <b>{summary.controls_reduction_pct}% lower</b> than it would be without them.
           {wideBand && (
             <>
               {" "}It isn't fully proven yet — depending on how much can be independently verified, the real change
@@ -46,6 +47,14 @@ export default function SummaryBanner({ summary, orgName }) {
             <> <b>{open_data_quality_issues} open data-quality issues</b> are limiting that confidence.</>
           )}
         </p>
+        <div className={`report-chip ${summary.reportable ? "report-chip-good" : "report-chip-warn"}`}>
+          {summary.reportable
+            ? "Safe to report: the reduction holds even in the worst case"
+            : "Not yet safe to report: in the worst case, risk may not have fallen"}
+        </div>
+        <div className="hero-meta">
+          Measured {summary.as_of_date} against a {summary.baseline_date} baseline · scoring method {summary.method_version}
+        </div>
       </div>
 
       <div className="hero-gauge">

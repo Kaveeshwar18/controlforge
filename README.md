@@ -82,12 +82,21 @@ npm install
 npm run dev     # http://localhost:5173
 ```
 
-Re-run `python data-gen/generate_data.py` at any time to reset to a clean seeded state (this drops all accounts, including any you self-registered).
+```bash
+# 3. Tests (92 tests: scoring failure states, RBAC, resolve workflow)
+cd backend && pip install -r requirements-dev.txt && python -m pytest
+
+# 4. Experiment notebook (runs on its own throwaway DB)
+cd notebooks && jupyter nbconvert --to notebook --execute --inplace experiment.ipynb
+```
+
+Re-run `python data-gen/generate_data.py` (optionally `--seed N`) at any time to reset to a clean seeded state (this drops all accounts, including any you self-registered).
 
 ## The engineering decisions worth knowing about
 
 - **Evidence-time-awareness.** A control's effectiveness is computed using the evidence that existed *at the date being scored* — a control isn't credited until proof of it existed at that point in time, which is what makes the baseline-vs-today comparison honest rather than retroactively flattering.
-- **Marginal-contribution attribution can be super-additive.** When individually crediting each control (by counterfactually removing it) the sum can exceed the true total reduction, because overlapping controls share credit for the same protected asset. The dashboard reports this residual explicitly instead of silently forcing the numbers to add up.
+- **Control effect is separated from total change.** "Risk cut by completed controls" compares today's risk with a same-day counterfactual in which completed controls were never done, so vulnerability churn can't be passed off as control effect. Per-control marginal credits add up exactly to that total (risk is linear in each control's credit), and the residual is still computed as a guard (see `docs/failure-mode-analysis.md` §D).
+- **Source-feed freshness.** Scanner, CMDB, EDR and ticketing feeds each carry a last-sync time. A stale or missing feed shows a degraded-data banner and widens the worst case rather than passing old data off as current.
 - **Data-driven, not hardcoded.** The plant network, coordinates, and role/org access all come from `data-gen/plants.json`. Adding a seventh plant is a data change.
 - **Two real bugs were found by actually clicking through the app as each role**, not by code review — see `docs/failure-mode-analysis.md` §3. That process is part of why this is described as tested, not just built.
 
@@ -98,6 +107,7 @@ No rate limiting or lockout on repeated failed logins, no password reset flow, n
 ## Docs
 - [PRD & implementation plan](PRD_Control_Effectiveness_Dashboard.md)
 - [Review 1 report](docs/review-1-report.md)
+- [Review 2 (75%) phase report](docs/review-2-report.md)
 - [Field-workflow map](docs/field-workflow-map.md)
 - [Technical documentation](docs/technical-documentation.md)
 - [Failure-mode analysis](docs/failure-mode-analysis.md)

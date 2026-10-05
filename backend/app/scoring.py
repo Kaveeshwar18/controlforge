@@ -23,7 +23,12 @@ from sqlalchemy.orm import Session
 
 from . import models
 
-METHOD_VERSION = "v1.0"
+# v1.1 (2026-10): worst/best-case evidence treatment made principled, failed
+# verifications modelled, unmonitored assets given an uncertainty range, and
+# control-attributable reduction separated from total change. Each change was
+# prompted by a finding in notebooks/experiment.ipynb -- see
+# docs/failure-mode-analysis.md section D.
+METHOD_VERSION = "v1.1"
 
 # Human-readable labels for the internal source enum -- used anywhere a
 # confidence/evidence note is rendered as a sentence, so the UI never leaks
@@ -64,6 +69,18 @@ VERIFIED_STATUS_WEIGHT = 1.0
 
 SEVERITY_NUM = {"low": 1, "medium": 2, "high": 3, "critical": 4}
 
+# An asset with no telemetry at all is scored at this fixed exposure (out of
+# MAX_EXPOSURE 5.0) instead of zero -- "no data" must not read as "no risk".
+UNMONITORED_EXPOSURE = 2.5
+# ...but we genuinely don't know, so the bounds span a wide range. Without
+# this, a plant where nothing is monitored got a zero-width band -- the
+# dashboard was most "certain" exactly when it knew least.
+UNMONITORED_EXPOSURE_BEST = 1.0
+UNMONITORED_EXPOSURE_WORST = 4.0
+# Each open incident in the last 90 days adds this much to the multiplier
+# (resolved ones count half).
+INCIDENT_WEIGHT = 0.15
+
 
 def freshness_state(evidence_ts: datetime, as_of: datetime, source: str) -> str:
     age_days = (as_of - evidence_ts).days
@@ -88,6 +105,7 @@ class EvidenceState:
     source: Optional[str]
     confidence: float  # 0..1
     verified: bool
+    failed: bool = False  # most recent check ran and the control did NOT pass
 
 
 def latest_evidence_state(db: Session, control_id: str, as_of: datetime) -> EvidenceState:
@@ -102,9 +120,73 @@ def latest_evidence_state(db: Session, control_id: str, as_of: datetime) -> Evid
 
     latest = rows[0]
     fstate = freshness_state(latest.timestamp, as_of, latest.source)
+    if latest.result == "fail":
+        # a failed check is evidence the control ISN'T working -- it must not
+        # earn the same credit as a pass just because it's recent
+        return EvidenceState(has_evidence=True, freshness=fstate, source=latest.source, confidence=0.0, verified=False, failed=True)
     confidence = CONFIDENCE_TABLE.get((fstate, latest.source), 0.2)
     verified = latest.source in ("automated_scan", "third_party_audit") and latest.result == "pass" and fstate != "stale"
     return EvidenceState(has_evidence=True, freshness=fstate, source=latest.source, confidence=confidence, verified=verified)
+
+
+# ---- source-feed health ---------------------------------------------------
+
+FEED_LABEL = {
+    "vuln_scanner": "Vulnerability scanner",
+    "cmdb": "Asset inventory (CMDB)",
+    "edr_telemetry": "Endpoint telemetry (EDR)",
+    "ticketing": "Incident ticketing",
+}
+
+# A feed is "aging" once it has missed a sync or two, "stale" once the gap is
+# long enough that the data it last delivered can no longer stand in for today.
+FEED_AGING_MULTIPLE = 1.5
+FEED_STALE_MULTIPLE = 4.0
+
+# What a stale/missing feed does to the worst-case bound. The point estimate
+# is left alone -- we genuinely don't know what the feed would have reported,
+# so the honest move is to widen the band, not to guess a new centre.
+#   - scanner down: vulnerabilities disclosed since the last scan are
+#     invisible, so worst case assumes exposure is 25% higher than last seen
+#   - ticketing down: incidents raised since the last sync are invisible, so
+#     worst case assumes one unrecorded open incident per asset
+STALE_SCANNER_EXPOSURE_UPLIFT = 1.25
+STALE_TICKETING_INCIDENT_UPLIFT = 0.15
+
+
+def feed_state(feed: "models.DataFeed", as_of: datetime) -> str:
+    if feed.last_sync is None:
+        return "missing"
+    age_h = (as_of - feed.last_sync).total_seconds() / 3600.0
+    if age_h <= feed.expected_interval_hours * FEED_AGING_MULTIPLE:
+        return "fresh"
+    if age_h <= feed.expected_interval_hours * FEED_STALE_MULTIPLE:
+        return "aging"
+    return "stale"
+
+
+def feed_health(db: Session, org_id: str, as_of: datetime) -> list[dict]:
+    feeds = db.query(models.DataFeed).filter(models.DataFeed.org_id == org_id).order_by(models.DataFeed.feed_type).all()
+    out = []
+    for f in feeds:
+        state = feed_state(f, as_of)
+        out.append({
+            "feed_id": f.id,
+            "feed_type": f.feed_type,
+            "name": f.name,
+            "label": FEED_LABEL.get(f.feed_type, f.feed_type),
+            "state": state,
+            "last_sync": f.last_sync.isoformat() if f.last_sync else None,
+            "hours_since_sync": round((as_of - f.last_sync).total_seconds() / 3600.0, 1) if f.last_sync else None,
+            "expected_interval_hours": f.expected_interval_hours,
+            "last_error": f.last_error,
+            "widens_worst_case": state in ("stale", "missing") and f.feed_type in ("vuln_scanner", "ticketing"),
+        })
+    return out
+
+
+def degraded_feed_types(db: Session, org_id: str, as_of: datetime) -> set:
+    return {f["feed_type"] for f in feed_health(db, org_id, as_of) if f["state"] in ("stale", "missing")}
 
 
 @dataclass
@@ -219,7 +301,7 @@ def incident_multiplier(db: Session, asset_id: str, as_of: date) -> float:
             count += 1
         else:
             count += 0.5  # resolved incidents still count, but half as much
-    return 1.0 + 0.15 * count
+    return 1.0 + INCIDENT_WEIGHT * count
 
 
 @dataclass
@@ -235,12 +317,21 @@ class AssetRiskResult:
     missing_telemetry: bool = False
 
 
-def asset_risk(db: Session, asset: models.Asset, as_of: date, confidence_bias: Optional[str] = None) -> AssetRiskResult:
+def asset_risk(
+    db: Session, asset: models.Asset, as_of: date, confidence_bias: Optional[str] = None,
+    degraded_feeds: Optional[set] = None, excluded_control_ids: Optional[set] = None,
+) -> AssetRiskResult:
     """
     confidence_bias: None (point estimate), "low" (worst case: force confidence
     to the low bound for unresolved/low-confidence evidence), "high" (best case:
     assume full confidence on everything that has *any* evidence, i.e. audit
     would fully vindicate it).
+
+    degraded_feeds: feed types currently stale/missing for this org. Only
+    consulted for the current-day worst case -- see STALE_*_UPLIFT above.
+
+    excluded_control_ids: counterfactual -- score as if these controls had
+    never been done (used for per-control and total control attribution).
     """
     crit = resolved_criticality(asset)
     conflict = crit is None
@@ -253,7 +344,9 @@ def asset_risk(db: Session, asset: models.Asset, as_of: date, confidence_bias: O
     if not asset.has_telemetry:
         # Failure state: asset has no monitoring feed at all. We do NOT default
         # this to "low risk" -- absence of visibility is itself risk-bearing.
-        exp = 2.5  # neutral-elevated assumption, documented in UI as "unmonitored"
+        exp = {"low": UNMONITORED_EXPOSURE_WORST, "high": UNMONITORED_EXPOSURE_BEST}.get(
+            confidence_bias, UNMONITORED_EXPOSURE
+        )  # neutral-elevated assumption, documented in UI as "unmonitored"
         controls: list[ControlEffect] = []
         eff_avg = 0.0
         inc_mult = 1.0
@@ -272,15 +365,28 @@ def asset_risk(db: Session, asset: models.Asset, as_of: date, confidence_bias: O
             override = None
             if as_of >= date.today():
                 if confidence_bias == "low":
-                    override = 0.0 if ev.freshness in ("stale", "missing") else min(ev.confidence, 0.5)
+                    # worst case: only independent, non-stale proof is trusted.
+                    # (v1.0 also halved *verified* evidence here, so the band
+                    # grew with the number of good controls -- the opposite
+                    # of what it is meant to measure.)
+                    override = ev.confidence if ev.verified else 0.0
                 elif confidence_bias == "high":
-                    override = 1.0 if ev.has_evidence or c.status != "completed" else 0.0
-            e = control_effectiveness(c, ev, as_of, override_confidence=override)
+                    # best case: every passing record would survive an audit
+                    override = 1.0 if (ev.has_evidence and not ev.failed) else 0.0
+            if excluded_control_ids and c.id in excluded_control_ids:
+                e = 0.0
+            else:
+                e = control_effectiveness(c, ev, as_of, override_confidence=override)
             controls.append(ControlEffect(c.id, c.name, c.status, c.rollout_percentage, ev, e))
             eff_sum += e
         eff_avg = (eff_sum / len(controls)) if controls else 0.0
         inc_mult = incident_multiplier(db, asset.id, as_of)
         missing_tel = False
+        if confidence_bias == "low" and degraded_feeds and as_of >= date.today():
+            if "vuln_scanner" in degraded_feeds:
+                exp = min(exp * STALE_SCANNER_EXPOSURE_UPLIFT, MAX_EXPOSURE)
+            if "ticketing" in degraded_feeds:
+                inc_mult += STALE_TICKETING_INCIDENT_UPLIFT
 
     raw = crit_value * exp * (1 - eff_avg) * inc_mult
     return AssetRiskResult(
@@ -319,12 +425,21 @@ class BusinessRiskResult:
     asset_results: dict
 
 
-def business_risk(db: Session, org_id: str, as_of: date, confidence_bias: Optional[str] = None) -> BusinessRiskResult:
+def business_risk(
+    db: Session, org_id: str, as_of: date, confidence_bias: Optional[str] = None,
+    excluded_control_ids: Optional[set] = None,
+) -> BusinessRiskResult:
     assets = db.query(models.Asset).filter(models.Asset.org_id == org_id).all()
+    degraded = None
+    if confidence_bias == "low" and as_of >= date.today():
+        degraded = degraded_feed_types(db, org_id, datetime.now())
     total = 0.0
     per_asset = {}
     for a in assets:
-        r = asset_risk(db, a, as_of, confidence_bias=confidence_bias)
+        r = asset_risk(
+            db, a, as_of, confidence_bias=confidence_bias, degraded_feeds=degraded,
+            excluded_control_ids=excluded_control_ids,
+        )
         weighted = r.raw_score * a.business_impact_weight
         per_asset[a.id] = (r, weighted)
         total += weighted
@@ -352,7 +467,7 @@ def target_business_risk(db: Session, org_id: str, as_of: date) -> BusinessRiskR
         crit = resolved_criticality(a)
         crit_value = crit if crit is not None else max(a.criticality_scanner or 3, a.criticality_cmdb or 3)
         if not a.has_telemetry:
-            exp = 2.5
+            exp = UNMONITORED_EXPOSURE
             eff_avg = TARGET_MAX_EFFECTIVENESS  # target assumes telemetry gap gets fixed too
             inc_mult = 1.0
         else:
@@ -397,41 +512,26 @@ class AttributionSummary:
     measured_high: BusinessRiskResult
     reduction_point: float
     reduction_pct: float
-    reduction_low: float
-    reduction_high: float
+    # named by meaning, not by which bias produced them: an earlier version
+    # called these reduction_low/high, where "low" was actually the LARGER
+    # reduction -- and the experiment notebook duly reported the best case
+    # as the worst case. See failure-mode-analysis.md section C.
+    reduction_best_case: float   # largest plausible reduction
+    reduction_worst_case: float  # smallest (possibly negative) reduction
     pct_of_target_achieved: float
+    # "how much lower is today's risk than it would be WITHOUT the completed
+    # controls" -- same exposure on both sides, so vulnerability churn can't
+    # be passed off as control effect (which total change vs baseline does)
+    controls_reduction_pct: float
+    controls_reduction_best_pct: float
+    controls_reduction_worst_pct: float
     per_control: list
     residual: float
     method_version: str = METHOD_VERSION
 
 
 def _business_risk_excluding_control(db: Session, org_id: str, as_of: date, excluded_control_id: str) -> float:
-    assets = db.query(models.Asset).filter(models.Asset.org_id == org_id).all()
-    total = 0.0
-    for a in assets:
-        if not a.has_telemetry:
-            r = asset_risk(db, a, as_of)
-            total += r.raw_score * a.business_impact_weight
-            continue
-        crit = resolved_criticality(a)
-        crit_value = crit if crit is not None else max(a.criticality_scanner or 3, a.criticality_cmdb or 3)
-        exp = exposure_factor(db, a.id, as_of)
-        ctrls = applicable_controls(db, a, as_of)
-        as_of_dt = datetime.combine(as_of, datetime.min.time())
-        eff_sum = 0.0
-        n = 0
-        for c in ctrls:
-            n += 1
-            if c.id == excluded_control_id:
-                eff_sum += 0.0  # counterfactual: this control never happened
-                continue
-            ev = latest_evidence_state(db, c.id, as_of_dt)
-            eff_sum += control_effectiveness(c, ev, as_of)
-        eff_avg = (eff_sum / n) if n else 0.0
-        inc_mult = incident_multiplier(db, a.id, as_of)
-        raw = crit_value * exp * (1 - eff_avg) * inc_mult
-        total += raw * a.business_impact_weight
-    return total
+    return business_risk(db, org_id, as_of, excluded_control_ids={excluded_control_id}).raw_score
 
 
 def compute_attribution(db: Session, org_id: str, baseline_date: date, as_of: date) -> AttributionSummary:
@@ -442,8 +542,8 @@ def compute_attribution(db: Session, org_id: str, baseline_date: date, as_of: da
     measured_high = business_risk(db, org_id, as_of, confidence_bias="high")  # best case -> LOWEST residual risk
 
     reduction_point = baseline.raw_score - measured_point.raw_score
-    reduction_low = baseline.raw_score - measured_high.raw_score   # largest reduction (best case: measured_high = lowest risk)
-    reduction_high = baseline.raw_score - measured_low.raw_score   # smallest/negative reduction (worst case: measured_low = highest risk)
+    reduction_best = baseline.raw_score - measured_high.raw_score   # measured_high = best case = lowest residual risk
+    reduction_worst = baseline.raw_score - measured_low.raw_score   # measured_low = worst case = highest residual risk
     reduction_pct = (reduction_point / baseline.raw_score * 100.0) if baseline.raw_score else 0.0
     achievable = baseline.raw_score - target.raw_score
     pct_of_target = (reduction_point / achievable * 100.0) if achievable > 1e-9 else 0.0
@@ -451,6 +551,18 @@ def compute_attribution(db: Session, org_id: str, baseline_date: date, as_of: da
     completed_controls = db.query(models.Control).filter(
         models.Control.org_id == org_id, models.Control.status == "completed"
     ).all()
+    completed_ids = {c.id for c in completed_controls}
+
+    def _controls_pct(bias, measured):
+        # counterfactual scored under the SAME bias, so feed/unmonitored
+        # adjustments appear on both sides and cancel out of the ratio
+        without = business_risk(db, org_id, as_of, confidence_bias=bias, excluded_control_ids=completed_ids).raw_score
+        return without, ((without - measured.raw_score) / without * 100.0) if without > 1e-9 else 0.0
+
+    without_point, controls_pct = _controls_pct(None, measured_point)
+    _, controls_best = _controls_pct("high", measured_high)
+    _, controls_worst = _controls_pct("low", measured_low)
+    controls_reduction_raw = without_point - measured_point.raw_score
 
     per_control = []
     attributed_sum = 0.0
@@ -461,7 +573,11 @@ def compute_attribution(db: Session, org_id: str, baseline_date: date, as_of: da
 
         as_of_dt = datetime.combine(as_of, datetime.min.time())
         ev = latest_evidence_state(db, c.id, as_of_dt)
-        if ev.freshness == "missing":
+        if ev.failed:
+            note = "Failed its most recent verification -- no risk credit until it passes again."
+            delta_low, delta_high = 0.0, 0.0
+            delta_point = 0.0
+        elif ev.freshness == "missing":
             note = "No verification evidence on file -- excluded from risk credit, shown as zero."
             delta_low, delta_high = 0.0, 0.0
             delta_point = 0.0
@@ -486,7 +602,10 @@ def compute_attribution(db: Session, org_id: str, baseline_date: date, as_of: da
         ))
 
     per_control.sort(key=lambda x: x.delta_point, reverse=True)
-    residual = reduction_point - attributed_sum
+    # residual is measured against the control-attributable total, not the
+    # total change since baseline: in v1.0 it silently absorbed vulnerability
+    # churn as well as genuine control-overlap effects
+    residual = controls_reduction_raw - attributed_sum
 
     return AttributionSummary(
         org_id=org_id,
@@ -494,9 +613,12 @@ def compute_attribution(db: Session, org_id: str, baseline_date: date, as_of: da
         measured_point=measured_point, measured_low=measured_low, measured_high=measured_high,
         reduction_point=round(reduction_point, 2),
         reduction_pct=round(reduction_pct, 1),
-        reduction_low=round(reduction_low, 2),
-        reduction_high=round(reduction_high, 2),
+        reduction_best_case=round(reduction_best, 2),
+        reduction_worst_case=round(reduction_worst, 2),
         pct_of_target_achieved=round(pct_of_target, 1),
+        controls_reduction_pct=round(controls_pct, 1),
+        controls_reduction_best_pct=round(controls_best, 1),
+        controls_reduction_worst_pct=round(controls_worst, 1),
         per_control=per_control,
         residual=round(residual, 2),
     )
