@@ -1,5 +1,5 @@
 {
-  "_comment": "Single source of truth for the plant network. The generator and the map both derive from this file -- adding a site means adding an entry here, no code change. Coordinates are the real city centres; everything else (assets, controls, findings) is synthetic.",
+  "_comment": "Single source of truth for the plant network. The generator and the map both derive from this file -- adding a site means adding an entry here, no code change. feed_faults injects a source-feed outage for that plant (hours_ago null = never connected). Coordinates are the real city centres; everything else (assets, controls, findings) is synthetic.",
 
   "corporate": {
     "id": "corp",
@@ -10,6 +10,7 @@
   "plants": [
     {
       "id": "chennai",
+      "feed_faults": {"edr_telemetry": {"hours_ago": 3.2, "error": "Intermittent collector timeouts on the OT-zone EDR relay"}},
       "name": "Chennai Assembly Plant",
       "city": "Chennai",
       "state": "Tamil Nadu",
@@ -40,6 +41,7 @@
     },
     {
       "id": "hyderabad",
+      "feed_faults": {"ticketing": {"hours_ago": null, "error": "Incident-ticketing integration has never been configured for this site"}},
       "name": "Hyderabad Process Plant",
       "city": "Hyderabad",
       "state": "Telangana",
@@ -50,6 +52,7 @@
     },
     {
       "id": "pune",
+      "feed_faults": {"vuln_scanner": {"hours_ago": 218, "error": "Scanner appliance licence expired; scheduled scans have failed since the last good run"}},
       "name": "Pune Fabrication Plant",
       "city": "Pune",
       "state": "Maharashtra",
@@ -60,6 +63,7 @@
     },
     {
       "id": "mumbai",
+      "feed_faults": {"cmdb": {"hours_ago": 960, "error": "CMDB export job disabled during a migration and never re-enabled"}},
       "name": "Mumbai Packaging Plant",
       "city": "Mumbai",
       "state": "Maharashtra",

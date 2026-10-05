@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -20,7 +20,6 @@ def _freshness_overview(db: Session, org_id: str, as_of) -> dict:
     to HAVE evidence -- i.e. status == completed. An in_progress or planned
     control showing 'missing' isn't a failure state, it's just not done yet,
     so it's excluded here rather than inflating the missing-evidence count."""
-    from datetime import datetime
     counts = {"fresh": 0, "aging": 0, "stale": 0, "missing": 0}
     controls = db.query(models.Control).filter(
         models.Control.org_id == org_id, models.Control.status == "completed"
@@ -48,6 +47,8 @@ def risk_summary(org_id: str, identity: Identity = Depends(get_identity), db: Se
     baseline_date = _baseline_date()
     attribution = scoring.compute_attribution(db, org_id, baseline_date, today)
 
+    feeds = _feeds_for(identity, db, org_id)
+
     open_issues = db.query(models.DataQualityIssue).filter(
         models.DataQualityIssue.org_id == org_id, models.DataQualityIssue.status == "open"
     ).count()
@@ -67,10 +68,41 @@ def risk_summary(org_id: str, identity: Identity = Depends(get_identity), db: Se
         "measured_score_worst_case": round(attribution.measured_low.normalized_score, 1),
         "reduction_pct": attribution.reduction_pct,
         "pct_of_target_achieved": attribution.pct_of_target_achieved,
+        # share of today's risk removed by completed controls, holding exposure
+        # fixed -- the metric the brief asks for, separated from total change
+        "controls_reduction_pct": attribution.controls_reduction_pct,
+        "controls_reduction_best_pct": attribution.controls_reduction_best_pct,
+        "controls_reduction_worst_pct": attribution.controls_reduction_worst_pct,
+        # decision rule: a reduction is only "reportable" to the board if it
+        # survives the worst case
+        "reportable": attribution.reduction_worst_case > 0,
         "open_data_quality_issues": open_issues,
         "freshness_overview": _freshness_overview(db, org_id, today),
+        "feed_health": feeds,
+        # any feed stale/missing means part of this picture is frozen in time;
+        # the UI shows a degraded-data banner rather than a normal dashboard
+        "degraded_feeds": [f["feed_type"] for f in feeds if f["state"] in ("stale", "missing")],
+        "computed_at": datetime.now().isoformat(timespec="seconds"),
     }
     return result
+
+
+def _feeds_for(identity: Identity, db: Session, org_id: str) -> list[dict]:
+    """Per-source sync status. Every role can see whether the data is current
+    -- that's not sensitive -- but non-technical roles don't get internal
+    error messages or system names, which can identify internal appliances."""
+    feeds = scoring.feed_health(db, org_id, datetime.now())
+    if not identity.caps["technical_drilldown"]:
+        for f in feeds:
+            f["last_error"] = None
+            f["name"] = f["label"]
+    return feeds
+
+
+@router.get("/orgs/{org_id}/feeds")
+def source_feeds(org_id: str, identity: Identity = Depends(get_identity), db: Session = Depends(get_db)):
+    require_org_access(identity, org_id)
+    return _feeds_for(identity, db, org_id)
 
 
 @router.get("/orgs/{org_id}/risk-trend")

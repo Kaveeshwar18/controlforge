@@ -3,8 +3,9 @@
 The PRD requires failure-state design, not just a happy path. This document
 lists every failure state built into the prototype, where it's seeded, how
 it's detected, and exactly how the UI treats it differently from a "healthy"
-reading. Six states were required as a minimum; this build has six, plus two
-found and fixed during testing (section 3).
+reading. Six states were required as a minimum. This build has eight designed
+states (§1–8) plus the defects found and fixed during testing (§A–E). Every
+designed state is covered by an automated test in `backend/tests/`.
 
 ## 1. Missing telemetry / unverified control
 
@@ -135,6 +136,34 @@ PLANT_MANAGER does not have access to organization 'mumbai'"*), rendered as a
 distinct error banner — never a blank screen, a silent empty list, or a
 generic failure message.
 
+## 8. Source-feed outage (added in Phase 2)
+
+**What it is:** An upstream integration (vulnerability scanner, CMDB, EDR
+collector, incident ticketing) stops syncing or was never connected. Every
+figure derived from that feed is silently frozen at its last sync.
+
+**Where it's seeded:** `data-gen/plants.json` → `feed_faults` per plant, applied
+by `generate_data.py::seed_feeds`. Pune: scanner stale (218 h, 24 h expected).
+Hyderabad: ticketing never connected. Mumbai: CMDB stale (40 days). Chennai:
+EDR delayed (aging, not stale).
+
+**Detection:** `scoring.feed_state()` classifies each `DataFeed` as
+fresh (≤1.5× expected interval) / aging (≤4×) / stale / missing (`last_sync IS NULL`).
+
+**Effect on the math:** the point estimate is unchanged, because we don't
+know what the feed would have reported. The **worst case** is widened:
+scanner stale/missing → exposure ×1.25; ticketing stale/missing → +0.15
+incident multiplier per asset. CMDB/EDR outages are flagged but don't move the
+score (documented as such in the UI).
+
+**UI treatment:** an amber degraded-data banner above the headline, naming the
+feed and its consequence in plain language; a "Data freshness" panel listing
+every feed with last-sync age and state badge; a `feed_outage` issue in the
+data-quality inbox. An engineer's resolve sets `last_sync = now()` and the
+banner and worst-case widening disappear for every role. External auditors
+and plant managers see the state but not the internal error text
+(`risk.py::_feeds_for`).
+
 ---
 
 ## Failure states found and fixed during testing (not pre-planned, discovered by exercising the UI)
@@ -163,3 +192,41 @@ was wrong. Fixed with a request-token guard in `App.jsx` (`loadRequestId`)
 that discards any response superseded by a newer request. This class of bug
 is particularly dangerous for a risk dashboard specifically because it fails
 silently and confidently — the number just looks normal, it's simply wrong.
+
+
+**C. Best/worst case reported the wrong way round in the experiment
+(found in Phase 2 code review of the notebook).** `AttributionSummary` named
+its fields `reduction_low` / `reduction_high`, where *low* was actually the
+**larger** reduction (it came from the "low risk" best case). The v1
+notebook's `worst_case_reduction_pct` column therefore printed the
+**best** case under a worst-case label: the most optimistic number, labelled
+as the most cautious one. The same notebook's "sensitivity analysis" only
+counted self-attested controls and never re-scored anything. Fixed by
+renaming the fields to `reduction_best_case` / `reduction_worst_case`, adding
+regression test `test_best_case_reduction_is_never_smaller_than_worst_case`,
+and replacing the sensitivity section with a real re-score (notebook §5).
+
+**D. Four scoring-method flaws exposed by the v2 experiment → method v1.1.**
+The first run of the rebuilt notebook produced results that contradicted
+the design intent. Each was fixed and versioned (`METHOD_VERSION = "v1.1"`):
+
+| # | Symptom in the experiment | Root cause | Fix |
+|---|---|---|---|
+| D1 | Band width uncorrelated with evidence quality (r = −0.05), and a verification sprint *widened* the band | Worst case capped **all** evidence at 0.5 confidence, including fresh independent verification, so more good controls meant a wider band | Worst case keeps full confidence for verified evidence and gives 0 to self-attested/stale/missing |
+| D2 | At Bengaluru, 48.8 of the 60.2-point "reduction attributed to controls" came from vulnerability churn | The headline was total change since baseline, labelled as control effect | New `controls_reduction_pct`: today's risk vs. a same-day counterfactual with completed controls removed, scored under the same bias |
+| D3 | A plant with every asset unmonitored got a zero-width band (most "certain" when it knew least) | Unmonitored exposure was a single constant in all three cases | Bounds use `UNMONITORED_EXPOSURE_BEST/WORST` = 1.0 / 4.0 around the 2.5 point |
+| D4 | A failed verification would still earn credit | `latest_evidence_state` ignored `Evidence.result` | `result == "fail"` → confidence 0, `failed = True`, attribution note "Failed its most recent verification" |
+
+A further correction came out of this: the large negative "interaction
+residual" that Review 1 (and stakeholder finding #5) explained as
+overlapping controls was really vulnerability churn, because it was taken
+against total change. Against the control-attributable total, the residual
+is 0 at every plant: risk is linear in each control's credit (asset risk
+uses *average* effectiveness), so marginal attribution is exactly additive.
+
+**E. False "no plants assigned" error on every first load.** The
+dashboard showed *"This account has no plants assigned yet"* for a moment
+while the org list was still loading. That's a failure state shown when no
+failure existed, which trains users to ignore real errors. Fixed with an
+explicit `orgsLoaded` state in `App.jsx`: a loading message shows until the
+list arrives, and the error only shows for a genuinely empty list.

@@ -13,10 +13,23 @@ export default function RiskSummaryCards({ summary, role }) {
           likely between {summary.measured_score_best_case} and {summary.measured_score_worst_case}
         </div>
         <div className="score-foot">
-          <span>{businessFraming ? "Business risk" : "Attributed to controls"}</span>
-          <span className={improved ? "score-delta-good" : "score-delta-bad"}>
-            {improved ? "↓" : "↑"} {Math.abs(summary.reduction_pct)}%
-          </span>
+          {businessFraming ? (
+            <>
+              <span>Change since baseline</span>
+              <span className={improved ? "score-delta-good" : "score-delta-bad"}>
+                {improved ? "↓" : "↑"} {Math.abs(summary.reduction_pct)}%
+              </span>
+            </>
+          ) : (
+            // counterfactual: today's risk vs today's risk without the completed
+            // controls -- vulnerability churn can't inflate this one
+            <>
+              <span title={`Range ${summary.controls_reduction_worst_pct}–${summary.controls_reduction_best_pct}%`}>
+                Cut by completed controls
+              </span>
+              <span className="score-delta-good">↓ {summary.controls_reduction_pct}%</span>
+            </>
+          )}
         </div>
       </div>
 

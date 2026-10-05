@@ -11,6 +11,8 @@ INCLUDING deliberately injected failure states (PRD section 7):
   4. partial control rollout (in_progress with rollout_percentage < 100)
   5. regression (incident after a previously-verified control)
   6. unmonitored OT assets (has_telemetry=False)
+  7. source-feed outage (a scanner/CMDB/EDR/ticketing feed stopped syncing,
+     configured per plant via `feed_faults` in plants.json)
 
 Re-runnable: drops and recreates the sqlite db every run.
 """
@@ -26,7 +28,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 from app.database import Base, engine, SessionLocal  # noqa: E402
 from app import models, scoring, auth  # noqa: E402
 
-random.seed(42)
+DEFAULT_SEED = 42
 TODAY = date.today()
 
 # Local demo credential only -- see the note where accounts are seeded.
@@ -357,6 +359,47 @@ def seed_data_quality_issues(db, org_id: str, assets, controls, regression_asset
     db.commit()
 
 
+# feed_type -> (display name, expected sync interval in hours, healthy lag range in hours)
+FEED_CATALOG = {
+    "vuln_scanner": ("Network vulnerability scanner", 24, (2, 14)),
+    "cmdb": ("CMDB asset export", 168, (12, 72)),
+    "edr_telemetry": ("EDR telemetry collector", 1, (0.1, 0.9)),
+    "ticketing": ("Incident ticketing integration", 4, (0.3, 3)),
+}
+
+
+def seed_feeds(db, org_id: str, feed_faults: dict):
+    """FAILURE STATE 7: one feed per plant can be configured (plants.json
+    `feed_faults`) to have stopped syncing, or never to have been connected.
+    Every stale/missing feed also opens a data-quality issue so it lands in
+    the engineer's inbox instead of only being visible as a badge."""
+    now = datetime.now()
+    for feed_type, (name, interval, (lo, hi)) in FEED_CATALOG.items():
+        fault = feed_faults.get(feed_type)
+        if fault:
+            hours = fault.get("hours_ago")
+            last_sync = None if hours is None else now - timedelta(hours=hours)
+            error = fault.get("error")
+        else:
+            last_sync = now - timedelta(hours=random.uniform(lo, hi))
+            error = None
+        feed = models.DataFeed(
+            id=f"{org_id}-F-{feed_type}", org_id=org_id, feed_type=feed_type, name=name,
+            expected_interval_hours=interval, last_sync=last_sync, last_error=error,
+        )
+        db.add(feed)
+        state = scoring.feed_state(feed, now)
+        if state in ("stale", "missing"):
+            label = scoring.FEED_LABEL[feed_type]
+            when = "has never synced" if last_sync is None else f"last synced {last_sync:%Y-%m-%d %H:%M}"
+            db.add(models.DataQualityIssue(
+                id=f"{org_id}-DQF-{feed_type}", org_id=org_id, issue_type="feed_outage", feed_id=feed.id,
+                description=f"{label} feed {when} (expected every {interval}h). {error or ''}".strip(),
+                status="open", created_date=(last_sync.date() if last_sync else TODAY - timedelta(days=30)),
+            ))
+    db.commit()
+
+
 def seed_risk_snapshots(db, org_id: str):
     # stop at 30 days out -- "today" is always computed live by the API so the
     # trend line reflects any data-quality fixes made through the UI
@@ -407,11 +450,16 @@ def build_org(db, plant: dict):
     )
     regression_asset = seed_vulnerabilities_and_incidents(db, org_id, assets, controls, maturity=maturity)
     seed_data_quality_issues(db, org_id, assets, controls, regression_asset)
+    seed_feeds(db, org_id, plant.get("feed_faults", {}))
     seed_risk_snapshots(db, org_id)
 
 
-def main():
-    print("Resetting database...")
+def main(seed: int = DEFAULT_SEED):
+    """`seed` makes the dataset reproducible; the experiment notebook re-runs
+    this with many seeds (into a throwaway CONTROLFORGE_DB) to check that the
+    headline result isn't an artefact of one lucky draw."""
+    random.seed(seed)
+    print(f"Resetting database (seed={seed})...")
     reset_db()
     config = load_plant_config()
     db = SessionLocal()
@@ -431,10 +479,15 @@ def main():
         print(f"  Vulnerabilities: {db.query(models.Vulnerability).count()}")
         print(f"  Incidents: {db.query(models.Incident).count()}")
         print(f"  Data quality issues: {db.query(models.DataQualityIssue).count()}")
+        print(f"  Source feeds: {db.query(models.DataFeed).count()}")
         print(f"  Risk snapshots: {db.query(models.RiskSnapshot).count()}")
     finally:
         db.close()
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description="Seed the ControlForge database.")
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    args = parser.parse_args()
+    main(seed=args.seed)

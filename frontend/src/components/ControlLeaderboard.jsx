@@ -1,6 +1,7 @@
 // Short, plain versions of the backend's confidence notes -- the full
 // explanation is still available in the drill-down.
 function shortConfidence(note) {
+  if (note.startsWith("Failed")) return "Failed its last check — no credit";
   if (note.startsWith("No verification")) return "Not verified — no credit given";
   if (note.startsWith("Last checked")) return "Check is out of date";
   if (note.startsWith("Self-attested")) return "Self-reported only";
@@ -8,6 +9,7 @@ function shortConfidence(note) {
 }
 
 function confidenceTone(note) {
+  if (note.startsWith("Failed")) return "bad";
   if (note.startsWith("No verification")) return "bad";
   if (note.startsWith("Last checked")) return "warn";
   if (note.startsWith("Self-attested")) return "warn";
@@ -50,9 +52,10 @@ export default function ControlLeaderboard({ data, onSelectControl }) {
       )}
 
       <div className="footnote">
-        {residual_interaction_effect < 0
-          ? `Shares are of credited reduction only. Controls overlap on the same equipment, so individual credit adds up to ${Math.abs(residual_interaction_effect)} more than the true total — the headline number already corrects for that.`
-          : "Shares are of the total risk reduction credited to completed controls."}
+        Shares are of the risk that completed controls are removing today, measured against a same-day “without these
+        controls” counterfactual, so vulnerability fixes aren't counted as control credit.
+        {Math.abs(residual_interaction_effect) >= 0.5 &&
+          ` Individual credits differ from the total by ${residual_interaction_effect}; the headline uses the total.`}
       </div>
     </div>
   );

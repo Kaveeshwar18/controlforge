@@ -109,21 +109,47 @@ multiplier and zero control effectiveness).
   human error), so the ceiling stays credible instead of implying a perfect
   security program is achievable.
 - **Measured** = `business_risk(org, today)`, confidence-weighted by real
-  evidence. Also computed at `confidence_bias="low"` (worst case: heavily
-  discount stale/self-attested evidence) and `"high"` (best case: assume any
-  evidence that exists is fully trustworthy) to produce the **error band**.
+  evidence. Also computed at `confidence_bias="low"` and `"high"` to produce
+  the **error band** (method v1.1):
+
+  | Input | Point | Best case (`high`) | Worst case (`low`) |
+  |---|---|---|---|
+  | Verified evidence (automated scan / audit, not stale) | table confidence | 1.0 | table confidence (kept) |
+  | Self-attested evidence | 0.7 × table confidence | 0.7 × 1.0 | 0 |
+  | Stale or missing evidence | discounted / 0 | 1.0 if any passing record, else 0 | 0 |
+  | Failed most recent check (`result = "fail"`) | 0 | 0 | 0 |
+  | Unmonitored asset exposure | 2.5 | 1.0 | 4.0 |
+  | Scanner feed stale/missing | — | — | exposure × 1.25 |
+  | Ticketing feed stale/missing | — | — | incident multiplier + 0.15 |
   These bias overrides only ever apply to the current-day measurement — a
   baseline/target date isn't an audit-trust question, it's a factual or
   hypothetical reconstruction.
+- **Control-attributable reduction** (v1.1, the brief's headline metric):
+  `controls_reduction_pct = (R_without − R_today) / R_without`, where
+  `R_without = business_risk(today, excluded_control_ids = all completed)`.
+  Both sides are scored on the same day under the same bias, so vulnerability
+  churn and feed adjustments cancel out. The total change since baseline
+  (`reduction_pct`) is still reported, but as a separate figure.
 - **Per-control attribution**: for each completed control, recompute
-  `business_risk` with that one control's effect counterfactually removed
-  (`_business_risk_excluding_control`); the delta is that control's marginal
-  contribution. The sum of all marginal contributions will **not** generally
-  equal `baseline − measured` when controls have overlapping coverage — the
-  difference is reported explicitly as `residual` ("interaction effects, not
-  cleanly assignable to one control") rather than silently forced to
-  reconcile. A large residual is a real signal of highly redundant/overlapping
-  control coverage, not a bug.
+  `business_risk` with that one control excluded. The delta is its marginal
+  contribution. Because asset risk uses the *average* effectiveness, risk is
+  linear in each control's credit, so the marginal contributions add up
+  exactly to the control-attributable total (`residual ≈ 0`, verified in the
+  notebook §8). In v1.0 the residual was taken against total change and so
+  absorbed vulnerability churn. It was wrongly described as an overlap
+  "interaction effect" (corrected, failure-mode analysis §D). The residual
+  check is kept as a guard in case the model becomes non-linear.
+- **Reportable** = `reduction_worst_case > 0`. This is the decision rule for
+  whether a plant's improvement can be quoted to the board.
+
+### 3.5 Source-feed health (`feed_state`, `feed_health`)
+Each plant has four `DataFeed` rows (`vuln_scanner`, `cmdb`, `edr_telemetry`,
+`ticketing`) with `expected_interval_hours` and `last_sync`. State: fresh
+≤1.5× interval, aging ≤4×, stale beyond that, missing if `last_sync` is
+NULL. Stale/missing scanner or ticketing feeds widen the worst case only
+(table above). `GET /orgs/{id}/feeds` and the `feed_health` block of
+`risk-summary` both pass through `_feeds_for()`, which strips `last_error`
+and internal system names for roles without technical drill-down.
 
 ## 4. RBAC & redaction (`backend/app/rbac.py`)
 
@@ -158,6 +184,39 @@ redacting it too would break drill-down navigation for no privacy benefit
 Identity → authorisation is a one-way resolution: the token names an account,
 the account maps to exactly one persona, and that persona's role and org
 grants decide everything. There is no client-controllable path into that.
+
+## 4b. API reference
+
+| Method & path | Purpose | Role restrictions |
+|---|---|---|
+| `POST /api/auth/signup`, `POST /api/auth/login`, `GET /api/auth/me` | Account creation, sign-in (JWT), session check | public / any |
+| `GET /api/me` | Role + capability flags | any |
+| `GET /api/orgs` | Orgs the caller may see, with per-plant map metrics | scoped |
+| `GET /api/orgs/{id}/risk-summary` | Baseline/target/measured, bands, control-attributable cut, reportable flag, freshness overview, feed health | scoped |
+| `GET /api/orgs/{id}/risk-trend` | Historical snapshots + live today + target | scoped |
+| `GET /api/orgs/{id}/zones` | Risk index by Purdue zone (IT/OT/DMZ) | scoped |
+| `GET /api/orgs/{id}/controls` | Control leaderboard with per-control credit range | scoped |
+| `GET /api/orgs/{id}/controls/{cid}` | Control drill-down: evidence log, or evidence statement (non-technical roles) | scoped + redacted |
+| `GET /api/orgs/{id}/assets`, `/assets/{aid}` | Top-25 risk assets; asset drill-down (CVEs/incidents only for technical roles) | scoped + redacted |
+| `GET /api/orgs/{id}/data-quality` | Data-quality inbox | scoped |
+| `POST /api/orgs/{id}/data-quality/{iid}/resolve` | Resolve an issue with write-back to the scored record | OT Engineer, Corp Admin |
+| `GET /api/orgs/{id}/feeds` | Source-feed sync status | scoped + redacted |
+| `GET /api/compare` | Cross-plant comparison | Corp Admin |
+
+## 4c. Testing (`backend/tests`, 92 tests, `python -m pytest`)
+- `test_scoring.py`: hand-computed unit scenarios on an in-memory database
+  for every failure rule (freshness thresholds, zero credit without evidence,
+  stale discount, prorated rollout, evidence-time-awareness, unmonitored
+  assets, criticality conflict, vulnerability ageing, incidents, feed
+  thresholds and worst-case widening, failed verification, v1.1 bounds).
+  Also whole-engine invariants on the seeded dataset (band ordering, target ≤
+  measured, unverified controls credited zero, best ≥ point ≥ worst).
+- `test_api.py`: HTTP tests with real signed tokens covering missing or
+  tampered tokens, non-enumerating login errors, org scoping on every org
+  endpoint, auditor redaction (names, evidence log, feed errors), plant-manager
+  summary-only drill-down, admin-only compare, resolve permissions, and
+  resolve write-back changing other roles' views (conflict cleared, feed
+  restored, worst case narrowed, double-resolve rejected).
 
 ## 5. Known limitations
 - SQLite, single-process — fine for a prototype, not for concurrent multi-user
